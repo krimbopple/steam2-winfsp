@@ -1,0 +1,44 @@
+Steam2 WinFsp Manager - Third-Party Notices
+===========================================
+
+WinFsp
+------
+WinFsp - Windows File System Proxy,
+Copyright (C) Bill Zissimopoulos
+https://github.com/winfsp/winfsp
+
+WinFsp is licensed under GPLv3 with its FLOSS linking and distribution
+exception. This project links dynamically to an installed WinFsp runtime and
+is distributed as Free/Libre Open Source Software under LGPL-3.0-or-later.
+
+Qt 6
+----
+Copyright (C) The Qt Company Ltd. and other contributors.
+https://www.qt.io/
+
+Qt is dynamically linked and distributed under its applicable LGPL terms.
+Users may replace the Qt shared libraries in a distributed package.
+
+zlib 1.3.1
+----------
+Copyright (C) Jean-loup Gailly and Mark Adler.
+https://github.com/madler/zlib
+Distributed under the zlib license.
+
+nlohmann/json 3.12.0
+--------------------
+Copyright (C) Niels Lohmann.
+https://github.com/nlohmann/json
+Distributed under the MIT license.
+
+TeraRelease Steam2 extractor depot-key table
+---------------------------------------------
+The Steam2 depot key table in src/depot_keys.cpp is derived from the extractor
+source distributed with TeraRelease:
+http://us.steam2.download/extractor/src.zip
+
+The upstream archive did not state a separate license for this table. It is
+redistributed here with attribution to the TeraRelease extractor authors and
+contributors. The table is functional data used to decrypt user-supplied
+Steam2 depot archives. Valve archive payloads are not distributed by this
+project.

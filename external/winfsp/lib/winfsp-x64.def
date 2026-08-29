@@ -1,0 +1,10 @@
+LIBRARY winfsp-x64.dll
+EXPORTS
+    FspFileSystemAddDirInfo
+    FspFileSystemCreate
+    FspFileSystemDelete
+    FspFileSystemSetMountPoint
+    FspFileSystemStartDispatcher
+    FspFileSystemStopDispatcher
+    FspNtStatusFromWin32
+    FspWin32FromNtStatus

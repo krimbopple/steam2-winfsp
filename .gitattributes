@@ -1,0 +1,21 @@
+* text=auto
+
+*.c text eol=lf
+*.cc text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.qrc text eol=lf
+*.txt text eol=lf
+*.tsv text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.lib binary
+*.dll binary
+*.exe binary
+*.png binary
+*.ico binary

@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/data">
+    <file alias="depot_labels.tsv">../data/depot_labels.tsv</file>
+  </qresource>
+</RCC>
