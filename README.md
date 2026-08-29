@@ -16,7 +16,7 @@ Steam2 Depot Manager mounts user-supplied Steam2 `.blob` and `.dat` archives as 
 - RAM-only automatic mirroring of an installed `steam.dll` when a build requires it.
 - Deterministic executable selection: root executables first, then recursive paths.
 - Windows shell launching with editable arguments.
-- Embedded labels for 10,868 depots derived from the annotated TeraRelease index.
+- Embedded labels covering all 10,876 archived depot IDs, derived from the annotated TeraRelease index and backfilled where current SteamKit PICS appinfo could provide a definitive reference.
 
 All writes are discarded when the mount ends. There is no persistent-overlay mode.
 
