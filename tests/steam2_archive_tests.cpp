@@ -323,11 +323,16 @@ s2fs::DepotSpec write_fixture(TempDirectory& directory, std::span<const std::byt
 }
 s2fs::DepotSpec write_zero_size_metadata_fixture(
     TempDirectory& directory,
-    std::uint8_t mode) {
-    const Bytes marker{std::byte{0x42}};
-    const auto encoded = encode_file(marker, mode);
-    const Bytes empty;
-    const auto checksum = make_checksum_table(empty, encoded, mode, 0, 0);
+    std::uint8_t mode,
+    bool logical_file_is_nonempty = false) {
+    Bytes logical;
+    if (logical_file_is_nonempty) {
+        logical.push_back(std::byte{0x42});
+    }
+    EncodedFile encoded;
+    encoded.block_sizes.push_back(0);
+    const auto checksum = make_checksum_table(logical, encoded, mode, 0, 0);
+
     const auto manifest = make_manifest(3, 0);
     const auto nested = make_blob({{0, manifest}});
     const auto blob = make_blob({
@@ -497,6 +502,18 @@ void test_other_zero_size_block_mismatch_is_rejected() {
         "file size and block count disagree");
 }
 
+void test_nonempty_zero_payload_block_fails_on_read() {
+    TempDirectory directory;
+    auto spec = write_zero_size_metadata_fixture(directory, 1, true);
+    const auto depot = s2fs::Steam2Depot::load(spec);
+    require(depot.entries().size() == 1, "missing-payload manifest file missing");
+    require(depot.entries()[0].file->size() == 1, "missing-payload file size is wrong");
+    std::array<std::byte, 1> output{};
+    require_throws<std::runtime_error>(
+        [&] { (void)depot.entries()[0].file->read(0, output); },
+        "archive block with no payload");
+}
+
 void test_unknown_key() {
     require_throws<std::out_of_range>([] { (void)s2fs::depot_key(0xffffffffU); }, "no AES key");
 }
@@ -517,6 +534,7 @@ int main() {
         {"missing archive bytes", test_missing_archive_bytes_are_rejected},
         {"zero-size metadata entry", test_zero_size_metadata_entry},
         {"invalid zero-size block mismatch", test_other_zero_size_block_mismatch_is_rejected},
+        {"nonempty zero-payload block", test_nonempty_zero_payload_block_fails_on_read},
         {"unknown key", test_unknown_key},
     };
     int failures = 0;

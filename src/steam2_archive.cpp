@@ -636,13 +636,14 @@ std::map<std::uint32_t, FileMapping> parse_checksum_table(
                 block_offset += encoded_size;
             }
             for (const auto& block : mapping.blocks) {
-                if (block.encoded_size == 0 || block.encoded_size > 0x10000) {
+                if (block.encoded_size > 0x10000) {
                     malformed("archive block has an impossible encoded size");
                 }
                 if (block.archive_offset > source->size || block.encoded_size > source->size - block.archive_offset) {
                     malformed("file block exceeds its paired DAT");
                 }
-                if (mapping.mode == 3 && block.encoded_size != block.logical_size) {
+                if (mapping.mode == 3 && block.encoded_size != 0 &&
+                    block.encoded_size != block.logical_size) {
                     malformed("encrypted block size differs from logical size");
                 }
             }
@@ -995,6 +996,10 @@ std::size_t Steam2File::read(std::uint64_t offset, std::span<std::byte> output) 
         const auto block_end = block.logical_offset + block.logical_size;
         if (block_end <= offset) continue;
         if (block.logical_offset >= end) break;
+        if (block.encoded_size == 0) {
+            throw std::runtime_error(
+                "Steam2 file references an archive block with no payload");
+        }
         const auto encoded = impl_->mapping.source->read_exact(block.archive_offset, block.encoded_size);
         const auto decoded = decode_block(impl_->mapping.mode, encoded, block.logical_size, impl_->key);
         const auto copy_begin = std::max(offset, block.logical_offset);
