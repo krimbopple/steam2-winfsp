@@ -27,7 +27,6 @@ jobs:
     env:
       QT_VERSION: 6.8.3
       QT_ARCH: win64_msvc2022_64
-      QT_ROOT: ${{ runner.temp }}\Qt\6.8.3\msvc2022_64
 
     steps:
       - name: Check out source
@@ -36,8 +35,11 @@ jobs:
       - name: Install pinned Qt SDK
         shell: pwsh
         run: |
+          $qtBase = Join-Path $env:RUNNER_TEMP "Qt"
+          $qtRoot = Join-Path $qtBase "$env:QT_VERSION\\msvc2022_64"
           python -m pip install --disable-pip-version-check aqtinstall==3.3.0
-          python -m aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir "${{ runner.temp }}\Qt"
+          python -m aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH --outputdir $qtBase
+          "QT_ROOT=$qtRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure
         shell: pwsh
