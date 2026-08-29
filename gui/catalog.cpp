@@ -16,6 +16,8 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <string>
+
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -130,7 +132,9 @@ std::filesystem::path nativePath(const QString& path) {
     return std::filesystem::path(path.toStdWString());
 #else
     const QByteArray encoded = path.toUtf8();
-    return std::filesystem::u8path(encoded.constData(), encoded.constData() + encoded.size());
+    const auto* begin = reinterpret_cast<const char8_t*>(encoded.constData());
+    return std::filesystem::path(
+        std::u8string(begin, begin + encoded.size()));
 #endif
 }
 

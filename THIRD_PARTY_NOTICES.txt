@@ -31,6 +31,14 @@ Copyright (C) Niels Lohmann.
 https://github.com/nlohmann/json
 Distributed under the MIT license.
 
+OpenSSL 3
+---------
+Copyright (c) 1998-2024 The OpenSSL Project Authors.
+https://www.openssl.org/
+
+Linux builds dynamically link to OpenSSL libcrypto for AES decoding.
+OpenSSL 3 is distributed under the Apache License 2.0.
+
 TeraRelease Steam2 extractor depot-key table
 ---------------------------------------------
 The Steam2 depot key table in src/depot_keys.cpp is derived from the extractor

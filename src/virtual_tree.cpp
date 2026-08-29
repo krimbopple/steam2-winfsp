@@ -1,9 +1,14 @@
 #include "s2fs/virtual_tree.hpp"
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#else
+#include <locale.h>
+#include <wctype.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -31,8 +36,33 @@ constexpr std::uint32_t file_attribute_normal = 0x00000080U;
     throw std::system_error(std::make_error_code(error), message);
 }
 
+#ifndef _WIN32
+locale_t unicode_locale() noexcept {
+    static locale_t locale = [] {
+        locale_t result = newlocale(LC_CTYPE_MASK, "C.UTF-8", nullptr);
+        if (!result) {
+            result = newlocale(LC_CTYPE_MASK, "en_US.UTF-8", nullptr);
+        }
+        return result;
+    }();
+    return locale;
+}
+
+wchar_t fold_case(wchar_t value) noexcept {
+    const locale_t locale = unicode_locale();
+    if (locale) {
+        return static_cast<wchar_t>(towlower_l(static_cast<wint_t>(value), locale));
+    }
+    if (value >= L'A' && value <= L'Z') {
+        return static_cast<wchar_t>(value + (L'a' - L'A'));
+    }
+    return value;
+}
+#endif
+
 struct CaseInsensitiveLess {
     bool operator()(std::wstring_view left, std::wstring_view right) const noexcept {
+#ifdef _WIN32
         const int result = CompareStringOrdinal(
             left.data(), static_cast<int>(left.size()),
             right.data(), static_cast<int>(right.size()), TRUE);
@@ -43,6 +73,20 @@ struct CaseInsensitiveLess {
             return false;
         }
         return left < right;
+#else
+        const auto count = std::min(left.size(), right.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            const wchar_t folded_left = fold_case(left[index]);
+            const wchar_t folded_right = fold_case(right[index]);
+            if (folded_left < folded_right) {
+                return true;
+            }
+            if (folded_left > folded_right) {
+                return false;
+            }
+        }
+        return left.size() < right.size();
+#endif
     }
 };
 
@@ -588,16 +632,78 @@ std::wstring utf8_to_wide(std::string_view value) {
     if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         fail(std::errc::value_too_large, "UTF-8 string is too large");
     }
+#ifdef _WIN32
     const int input_size = static_cast<int>(value.size());
-    const int output_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0);
+    const int output_size = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0);
     if (output_size == 0) {
         fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
     }
     std::wstring result(static_cast<std::size_t>(output_size), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, result.data(), output_size) == 0) {
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size,
+            result.data(), output_size) == 0) {
         fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
     }
     return result;
+#else
+    static_assert(sizeof(wchar_t) >= 2);
+    std::wstring result;
+    result.reserve(value.size());
+    std::size_t offset = 0;
+    while (offset < value.size()) {
+        const auto first = static_cast<std::uint8_t>(
+            static_cast<unsigned char>(value[offset]));
+        std::uint32_t code_point{};
+        std::size_t continuation_count{};
+        std::uint32_t minimum{};
+        if (first <= 0x7fU) {
+            code_point = first;
+        } else if (first >= 0xc2U && first <= 0xdfU) {
+            code_point = first & 0x1fU;
+            continuation_count = 1;
+            minimum = 0x80U;
+        } else if (first >= 0xe0U && first <= 0xefU) {
+            code_point = first & 0x0fU;
+            continuation_count = 2;
+            minimum = 0x800U;
+        } else if (first >= 0xf0U && first <= 0xf4U) {
+            code_point = first & 0x07U;
+            continuation_count = 3;
+            minimum = 0x10000U;
+        } else {
+            fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
+        }
+        if (continuation_count > value.size() - offset - 1) {
+            fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
+        }
+        for (std::size_t index = 1; index <= continuation_count; ++index) {
+            const auto next = static_cast<std::uint8_t>(
+                static_cast<unsigned char>(value[offset + index]));
+            if ((next & 0xc0U) != 0x80U) {
+                fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
+            }
+            code_point = (code_point << 6U) | (next & 0x3fU);
+        }
+        if (code_point < minimum || code_point > 0x10ffffU ||
+            (code_point >= 0xd800U && code_point <= 0xdfffU)) {
+            fail(std::errc::illegal_byte_sequence, "invalid UTF-8 string");
+        }
+        if constexpr (sizeof(wchar_t) == 2) {
+            if (code_point <= 0xffffU) {
+                result.push_back(static_cast<wchar_t>(code_point));
+            } else {
+                code_point -= 0x10000U;
+                result.push_back(static_cast<wchar_t>(0xd800U + (code_point >> 10U)));
+                result.push_back(static_cast<wchar_t>(0xdc00U + (code_point & 0x3ffU)));
+            }
+        } else {
+            result.push_back(static_cast<wchar_t>(code_point));
+        }
+        offset += continuation_count + 1;
+    }
+    return result;
+#endif
 }
 
 std::string wide_to_utf8(std::wstring_view value) {
@@ -607,6 +713,7 @@ std::string wide_to_utf8(std::wstring_view value) {
     if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         fail(std::errc::value_too_large, "UTF-16 string is too large");
     }
+#ifdef _WIN32
     const int input_size = static_cast<int>(value.size());
     const int output_size = WideCharToMultiByte(
         CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0, nullptr, nullptr);
@@ -620,6 +727,49 @@ std::string wide_to_utf8(std::wstring_view value) {
         fail(std::errc::illegal_byte_sequence, "invalid UTF-16 string");
     }
     return result;
+#else
+    static_assert(sizeof(wchar_t) >= 2);
+    std::string result;
+    result.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        std::uint32_t code_point = static_cast<std::uint32_t>(value[index]);
+        if constexpr (sizeof(wchar_t) == 2) {
+            if (code_point >= 0xd800U && code_point <= 0xdbffU) {
+                if (index + 1 == value.size()) {
+                    fail(std::errc::illegal_byte_sequence, "invalid wide string");
+                }
+                const auto low = static_cast<std::uint32_t>(value[++index]);
+                if (low < 0xdc00U || low > 0xdfffU) {
+                    fail(std::errc::illegal_byte_sequence, "invalid wide string");
+                }
+                code_point = 0x10000U +
+                    ((code_point - 0xd800U) << 10U) + (low - 0xdc00U);
+            } else if (code_point >= 0xdc00U && code_point <= 0xdfffU) {
+                fail(std::errc::illegal_byte_sequence, "invalid wide string");
+            }
+        }
+        if (code_point > 0x10ffffU ||
+            (code_point >= 0xd800U && code_point <= 0xdfffU)) {
+            fail(std::errc::illegal_byte_sequence, "invalid wide string");
+        }
+        if (code_point <= 0x7fU) {
+            result.push_back(static_cast<char>(code_point));
+        } else if (code_point <= 0x7ffU) {
+            result.push_back(static_cast<char>(0xc0U | (code_point >> 6U)));
+            result.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+        } else if (code_point <= 0xffffU) {
+            result.push_back(static_cast<char>(0xe0U | (code_point >> 12U)));
+            result.push_back(static_cast<char>(0x80U | ((code_point >> 6U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+        } else {
+            result.push_back(static_cast<char>(0xf0U | (code_point >> 18U)));
+            result.push_back(static_cast<char>(0x80U | ((code_point >> 12U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | ((code_point >> 6U) & 0x3fU)));
+            result.push_back(static_cast<char>(0x80U | (code_point & 0x3fU)));
+        }
+    }
+    return result;
+#endif
 }
 
 } // namespace s2fs

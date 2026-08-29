@@ -1,7 +1,11 @@
 #include "s2fs/steam2_archive.hpp"
 
+#ifdef _WIN32
 #include <Windows.h>
 #include <bcrypt.h>
+#else
+#include <openssl/evp.h>
+#endif
 #include <zlib.h>
 
 #include <algorithm>
@@ -12,6 +16,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <memory>
 #include <iterator>
 #include <stdexcept>
 #include <string_view>
@@ -811,6 +816,7 @@ std::vector<ManifestEntry> parse_manifest(
     return files;
 }
 
+#ifdef _WIN32
 class BCryptAlgorithm {
 public:
     BCryptAlgorithm() {
@@ -874,6 +880,55 @@ std::vector<std::byte> aes_cfb_decrypt(
     }
     return output;
 }
+#else
+struct EvpCipherContextDeleter {
+    void operator()(EVP_CIPHER_CTX* context) const noexcept {
+        EVP_CIPHER_CTX_free(context);
+    }
+};
+
+using EvpCipherContext = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherContextDeleter>;
+
+void openssl_check(int result, const char* operation) {
+    if (result != 1) {
+        throw std::runtime_error(std::string(operation) + " failed");
+    }
+}
+
+std::vector<std::byte> aes_cfb_decrypt(
+    std::span<const std::byte> encrypted, const std::array<std::uint8_t, 16>& key) {
+    EvpCipherContext context(EVP_CIPHER_CTX_new());
+    if (!context) {
+        throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+    }
+    openssl_check(
+        EVP_EncryptInit_ex(context.get(), EVP_aes_128_ecb(), nullptr, key.data(), nullptr),
+        "EVP_EncryptInit_ex(AES-128-ECB)");
+    openssl_check(EVP_CIPHER_CTX_set_padding(context.get(), 0), "EVP_CIPHER_CTX_set_padding");
+
+    std::array<unsigned char, 16> feedback{};
+    std::array<unsigned char, 16> stream_block{};
+    std::vector<std::byte> output(encrypted.size());
+    for (std::size_t offset = 0; offset < encrypted.size(); offset += feedback.size()) {
+        int actual{};
+        openssl_check(
+            EVP_EncryptUpdate(
+                context.get(), stream_block.data(), &actual,
+                feedback.data(), static_cast<int>(feedback.size())),
+            "EVP_EncryptUpdate(CFB keystream)");
+        if (actual != static_cast<int>(stream_block.size())) {
+            throw std::runtime_error("OpenSSL returned a short AES block");
+        }
+        const auto count = std::min(feedback.size(), encrypted.size() - offset);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto cipher = std::to_integer<unsigned char>(encrypted[offset + index]);
+            output[offset + index] = static_cast<std::byte>(cipher ^ stream_block[index]);
+            feedback[index] = cipher;
+        }
+    }
+    return output;
+}
+#endif
 
 std::vector<std::byte> decode_block(
     std::uint8_t mode, std::span<const std::byte> encoded, std::uint32_t logical_size,

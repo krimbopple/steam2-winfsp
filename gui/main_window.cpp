@@ -35,13 +35,16 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTemporaryFile>
 #include <QTextBrowser>
 #include <QTime>
+#if defined(Q_OS_WIN)
 #include <windows.h>
 #include <shellapi.h>
+#endif
 
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -93,19 +96,35 @@ QString firstMountedExecutable(const QString& root) {
     struct Candidate {
         QString path;
         QString relative;
+        bool windowsExecutable = false;
     };
     QVector<Candidate> candidates;
     QDirIterator iterator(
         root,
-        QStringList{QStringLiteral("*.exe")},
         QDir::Files | QDir::NoSymLinks,
         QDirIterator::Subdirectories);
     const QDir rootDirectory(root);
     while (iterator.hasNext()) {
         const QString path = QDir::cleanPath(iterator.next());
-        candidates.push_back({path, rootDirectory.relativeFilePath(path)});
+        const QFileInfo file(path);
+        const bool windowsExecutable =
+            file.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) == 0;
+#if defined(Q_OS_WIN)
+        if (!windowsExecutable) {
+            continue;
+        }
+#else
+        if (!windowsExecutable && !file.isExecutable()) {
+            continue;
+        }
+#endif
+        candidates.push_back(
+            {path, rootDirectory.relativeFilePath(path), windowsExecutable});
     }
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
+        if (left.windowsExecutable != right.windowsExecutable) {
+            return left.windowsExecutable;
+        }
         const auto depth = [](const QString& relative) {
             return relative.count(QLatin1Char('/')) + relative.count(QLatin1Char('\\'));
         };
@@ -253,9 +272,11 @@ void MainWindow::buildUi() {
     mountPoint_ = new QComboBox(mountRow);
     mountPoint_->setEditable(true);
     mountPoint_->setInsertPolicy(QComboBox::NoInsert);
+#if defined(Q_OS_WIN)
     for (char drive = 'D'; drive <= 'Z'; ++drive) {
         mountPoint_->addItem(QString(QChar::fromLatin1(drive)) + QLatin1Char(':'));
     }
+#endif
     auto* browseMountButton = new QPushButton(tr("Folder…"), mountRow);
     mountRowLayout->addWidget(mountPoint_, 1);
     mountRowLayout->addWidget(browseMountButton);
@@ -315,7 +336,11 @@ void MainWindow::loadSettings() {
             libraryFolders_->addItem(QDir::cleanPath(folder));
         }
     }
+#if defined(Q_OS_WIN)
     mountPoint_->setCurrentText(settings.value(QStringLiteral("mountPoint"), QStringLiteral("M:")).toString());
+#else
+    mountPoint_->setCurrentText(settings.value(QStringLiteral("mountPoint"), QString{}).toString());
+#endif
     launchArguments_->setText(
         settings.value(QStringLiteral("launchArguments"), QStringLiteral("-game cstrike -steam")).toString());
 }
@@ -622,10 +647,12 @@ void MainWindow::chooseMountPoint() {
 
 QString MainWindow::selectedMountPoint() const {
     QString point = mountPoint_->currentText().trimmed();
+#if defined(Q_OS_WIN)
     if (point.size() == 2 && point.at(0).isLetter() && point.at(1) == QLatin1Char(':')) {
         point[0] = point.at(0).toUpper();
         return point;
     }
+#endif
     return point.isEmpty() ? QString{} : QDir::cleanPath(point);
 }
 
@@ -636,15 +663,24 @@ void MainWindow::mountComposition() {
 
     const QString mount = selectedMountPoint();
     if (mount.isEmpty()) {
+#if defined(Q_OS_WIN)
         QMessageBox::warning(this, tr("Mount point required"), tr("Choose a drive letter or mount folder."));
+#else
+        QMessageBox::warning(this, tr("Mount point required"), tr("Choose a mount folder."));
+#endif
         return;
     }
 
+#if defined(Q_OS_WIN)
+    const QString workerFileName = QStringLiteral("steam2fs.exe");
+#else
+    const QString workerFileName = QStringLiteral("steam2fs");
+#endif
     const QString executable =
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("steam2fs.exe"));
+        QDir(QCoreApplication::applicationDirPath()).filePath(workerFileName);
     if (!QFileInfo::exists(executable)) {
-        const QString message = tr("steam2fs.exe was not found beside this application:\n%1")
-                                    .arg(QDir::toNativeSeparators(executable));
+        const QString message = tr("%1 was not found beside this application:\n%2")
+                                    .arg(workerFileName, QDir::toNativeSeparators(executable));
         appendLog(message);
         QMessageBox::critical(this, tr("Cannot mount"), message);
         return;
@@ -710,10 +746,17 @@ void MainWindow::mountComposition() {
     mountProcess_.setArguments(
         {QStringLiteral("--build"), buildFile_->fileName(), QStringLiteral("--mount"), mount,
          QStringLiteral("--wait-stdin")});
+#if defined(Q_OS_WIN)
     appendLog(
         tr("Starting steam2fs.exe for %1 with %2 overlay(s).")
             .arg(QDir::toNativeSeparators(mount))
             .arg(composition_.size()));
+#else
+    appendLog(
+        tr("Starting steam2fs for %1 with %2 overlay(s).")
+            .arg(QDir::toNativeSeparators(mount))
+            .arg(composition_.size()));
+#endif
     statusBar()->showMessage(tr("Starting mount at %1…").arg(QDir::toNativeSeparators(mount)));
     mountProcess_.start();
     saveSettings();
@@ -775,8 +818,13 @@ void MainWindow::unmountTimedOut() {
     if (mountProcess_.state() == QProcess::NotRunning) {
         return;
     }
+#if defined(Q_OS_WIN)
     appendLog(tr("steam2fs.exe did not exit after the unmount request; terminating it."));
     statusBar()->showMessage(tr("Unmount timed out; terminating steam2fs.exe…"));
+#else
+    appendLog(tr("steam2fs did not exit after the unmount request; terminating it."));
+    statusBar()->showMessage(tr("Unmount timed out; terminating steam2fs…"));
+#endif
     mountProcess_.terminate();
 }
 
@@ -792,9 +840,15 @@ void MainWindow::mountFinished(int exitCode, QProcess::ExitStatus exitStatus) {
         appendLog(tr("Unmount complete."));
         statusBar()->showMessage(tr("Not mounted"));
     } else {
+#if defined(Q_OS_WIN)
         const QString message = tr("steam2fs.exe exited with code %1 (%2).")
                                     .arg(exitCode)
                                     .arg(exitStatus == QProcess::CrashExit ? tr("crashed") : tr("normal exit"));
+#else
+        const QString message = tr("steam2fs exited with code %1 (%2).")
+                                    .arg(exitCode)
+                                    .arg(exitStatus == QProcess::CrashExit ? tr("crashed") : tr("normal exit"));
+#endif
         appendLog(message);
         statusBar()->showMessage(message);
         if (!closePending_) {
@@ -807,8 +861,13 @@ void MainWindow::mountFinished(int exitCode, QProcess::ExitStatus exitStatus) {
 }
 
 void MainWindow::mountError(QProcess::ProcessError error) {
+#if defined(Q_OS_WIN)
     const QString message = tr("steam2fs.exe %1: %2")
                                 .arg(processErrorText(error), mountProcess_.errorString());
+#else
+    const QString message = tr("steam2fs %1: %2")
+                                .arg(processErrorText(error), mountProcess_.errorString());
+#endif
     appendLog(message);
     statusBar()->showMessage(message);
     if (error == QProcess::FailedToStart) {
@@ -827,9 +886,11 @@ void MainWindow::playGame() {
     }
 
     QString root = activeMountPoint_;
+#if defined(Q_OS_WIN)
     if (root.size() == 2 && root.at(1) == QLatin1Char(':')) {
         root += QLatin1Char('/');
     }
+#endif
     const QString executable = firstMountedExecutable(root);
     if (executable.isEmpty()) {
         const QString message = tr("The mounted composition does not contain an executable.");
@@ -838,6 +899,7 @@ void MainWindow::playGame() {
         return;
     }
 
+#if defined(Q_OS_WIN)
     const std::wstring nativeExecutable =
         QDir::toNativeSeparators(executable).toStdWString();
     const std::wstring nativeArguments = launchArguments_->text().toStdWString();
@@ -870,6 +932,46 @@ void MainWindow::playGame() {
         tr("Launched %1 through the Windows shell (PID %2). The game process is not managed by this application.")
             .arg(QFileInfo(executable).fileName())
             .arg(processId));
+#else
+    QString program = executable;
+    QStringList arguments = QProcess::splitCommand(launchArguments_->text());
+    const bool windowsExecutable =
+        QFileInfo(executable).suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) == 0;
+    if (windowsExecutable) {
+        const QString wine = QStandardPaths::findExecutable(QStringLiteral("wine"));
+        if (wine.isEmpty()) {
+            const QString message =
+                tr("Cannot launch %1 because it is a Windows executable and Wine was not found on PATH.")
+                    .arg(QFileInfo(executable).fileName());
+            appendLog(message);
+            QMessageBox::critical(this, tr("Cannot play"), message);
+            return;
+        }
+        program = wine;
+        arguments.prepend(executable);
+    }
+
+    QProcess launcher;
+    launcher.setProgram(program);
+    launcher.setArguments(arguments);
+    launcher.setWorkingDirectory(QFileInfo(executable).absolutePath());
+    qint64 processId = 0;
+    if (!launcher.startDetached(&processId)) {
+        const QString message = tr("Could not launch %1: %2")
+                                    .arg(QFileInfo(executable).fileName())
+                                    .arg(launcher.errorString());
+        appendLog(message);
+        QMessageBox::critical(this, tr("Cannot play"), message);
+        return;
+    }
+
+    saveSettings();
+    appendLog(
+        tr("Launched %1%2 (PID %3). The game process is not managed by this application.")
+            .arg(QFileInfo(executable).fileName())
+            .arg(windowsExecutable ? tr(" through Wine") : QString{})
+            .arg(processId));
+#endif
 }
 
 void MainWindow::appendLog(const QString& text) {
@@ -905,9 +1007,12 @@ void MainWindow::showAbout() {
         "<p><b>WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos</b></p>"
         "<p>Repository: <a href=\"https://github.com/winfsp/winfsp\">"
         "https://github.com/winfsp/winfsp</a></p>"
-        "<p>WinFsp is licensed under GPLv3 with its FLOSS linking exception. Full project and "
-        "third-party terms are provided in LICENSE and THIRD_PARTY_NOTICES.txt with the source "
-        "distribution.</p>"));
+        "<p>WinFsp is licensed under GPLv3 with its FLOSS linking exception.</p>"
+        "<h3>Linux runtime</h3>"
+        "<p>Linux mounts use FUSE3. AES decoding dynamically links to OpenSSL 3, "
+        "Copyright &copy; The OpenSSL Project Authors, under Apache-2.0.</p>"
+        "<p>Full project and third-party terms are provided in LICENSE, the licenses directory, "
+        "and THIRD_PARTY_NOTICES.txt with the source distribution.</p>"));
     layout->addWidget(text);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);

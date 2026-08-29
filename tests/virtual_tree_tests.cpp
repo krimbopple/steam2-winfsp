@@ -88,11 +88,34 @@ void test_unicode_case_folding_and_encoding() {
     const NodeHandle directory = tree.create(L"/\u00c4pfel", true, false);
     require(tree.lookup(L"/\u00e4PFEL") == directory, "Unicode ordinal case folding failed");
 
-    const std::string utf8 = "Gr\xC3\xBC\xC3\x9F" "e/\xE6\x9D\xB1\xE4\xBA\xAC";
-    require(s2fs::wide_to_utf8(s2fs::utf8_to_wide(utf8)) == utf8, "UTF conversion did not round-trip");
-    require_error(std::errc::illegal_byte_sequence,
-                  [] { static_cast<void>(s2fs::utf8_to_wide("\xC3\x28")); },
-                  "invalid UTF-8 was accepted");
+    const std::string utf8 =
+        "Gr\xC3\xBC\xC3\x9F" "e/\xE6\x9D\xB1\xE4\xBA\xAC/\xF0\x9F\x98\x80";
+    require(s2fs::wide_to_utf8(s2fs::utf8_to_wide(utf8)) == utf8,
+            "UTF conversion did not round-trip");
+    require(s2fs::utf8_to_wide("").empty(), "empty UTF-8 did not convert to an empty wide string");
+    require(s2fs::wide_to_utf8(L"").empty(), "empty wide string did not convert to empty UTF-8");
+
+    const auto require_invalid_utf8 = [](std::string_view input) {
+        require_error(
+            std::errc::illegal_byte_sequence,
+            [input] { static_cast<void>(s2fs::utf8_to_wide(input)); },
+            "invalid UTF-8 was accepted");
+    };
+    require_invalid_utf8("\xC3\x28");
+    require_invalid_utf8("\xC0\x80");
+    require_invalid_utf8("\xED\xA0\x80");
+    require_invalid_utf8("\xF4\x90\x80\x80");
+    require_invalid_utf8("\xE2\x82");
+
+#ifdef _WIN32
+    const std::wstring invalid_wide(1, static_cast<wchar_t>(0xd800));
+#else
+    const std::wstring invalid_wide(1, static_cast<wchar_t>(0x110000));
+#endif
+    require_error(
+        std::errc::illegal_byte_sequence,
+        [&invalid_wide] { static_cast<void>(s2fs::wide_to_utf8(invalid_wide)); },
+        "invalid wide string was accepted");
 }
 
 void test_sparse_write_and_truncation() {

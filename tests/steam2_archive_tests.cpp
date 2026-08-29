@@ -1,9 +1,13 @@
 #include "s2fs/steam2_archive.hpp"
 
+#ifdef _WIN32
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <bcrypt.h>
+#else
+#include <openssl/evp.h>
+#endif
 #include <zlib.h>
 
 #include <algorithm>
@@ -17,6 +21,7 @@
 #include <future>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -64,6 +69,7 @@ Bytes zlib_compress(std::span<const std::byte> input) {
     return output;
 }
 
+#ifdef _WIN32
 void bcrypt_check(NTSTATUS status, const char* what) {
     if (!BCRYPT_SUCCESS(status)) {
         throw std::runtime_error(std::string("fixture ") + what + " failed");
@@ -113,6 +119,55 @@ Bytes aes_cfb_encrypt(std::span<const std::byte> input, const std::array<std::ui
     }
     return output;
 }
+#else
+struct EvpCipherContextDeleter {
+    void operator()(EVP_CIPHER_CTX* context) const noexcept {
+        EVP_CIPHER_CTX_free(context);
+    }
+};
+
+using EvpCipherContext = std::unique_ptr<EVP_CIPHER_CTX, EvpCipherContextDeleter>;
+
+void openssl_check(int result, const char* what) {
+    if (result != 1) {
+        throw std::runtime_error(std::string("fixture ") + what + " failed");
+    }
+}
+
+Bytes aes_cfb_encrypt(std::span<const std::byte> input, const std::array<std::uint8_t, 16>& key) {
+    EvpCipherContext context(EVP_CIPHER_CTX_new());
+    if (!context) {
+        throw std::runtime_error("fixture create EVP context failed");
+    }
+    openssl_check(
+        EVP_EncryptInit_ex(context.get(), EVP_aes_128_ecb(), nullptr, key.data(), nullptr),
+        "initialize AES-128-ECB");
+    openssl_check(EVP_CIPHER_CTX_set_padding(context.get(), 0), "disable AES padding");
+
+    std::array<unsigned char, 16> feedback{};
+    std::array<unsigned char, 16> stream_block{};
+    Bytes output(input.size());
+    for (std::size_t offset = 0; offset < input.size(); offset += feedback.size()) {
+        int actual{};
+        openssl_check(
+            EVP_EncryptUpdate(
+                context.get(), stream_block.data(), &actual,
+                feedback.data(), static_cast<int>(feedback.size())),
+            "encrypt CFB keystream");
+        if (actual != static_cast<int>(stream_block.size())) {
+            throw std::runtime_error("fixture short AES block");
+        }
+        const auto count = std::min(feedback.size(), input.size() - offset);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto plain = std::to_integer<unsigned char>(input[offset + index]);
+            const auto cipher = static_cast<unsigned char>(plain ^ stream_block[index]);
+            output[offset + index] = static_cast<std::byte>(cipher);
+            feedback[index] = cipher;
+        }
+    }
+    return output;
+}
+#endif
 
 Bytes make_blob(const std::vector<std::pair<std::uint32_t, Bytes>>& fields) {
     Bytes bytes;
@@ -386,6 +441,25 @@ void require_throws(Function&& function, std::string_view contains) {
     throw std::runtime_error("expected exception was not thrown");
 }
 
+void test_aes_fixture_known_vector() {
+    constexpr std::array<std::uint8_t, 16> key{
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    };
+    constexpr std::array<std::uint8_t, 16> expected{
+        0xc6, 0xa1, 0x3b, 0x37, 0x87, 0x8f, 0x5b, 0x82,
+        0x6f, 0x4f, 0x81, 0x62, 0xa1, 0xc8, 0xd8, 0x79,
+    };
+    const Bytes plain(16);
+    const Bytes encrypted = aes_cfb_encrypt(plain, key);
+    require(encrypted.size() == expected.size(), "AES fixture vector length mismatch");
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        require(
+            std::to_integer<std::uint8_t>(encrypted[index]) == expected[index],
+            "AES fixture does not match the AES-128 zero-feedback vector");
+    }
+}
+
 void test_mode_and_range(std::uint8_t mode, std::uint32_t checksum_version,
     std::uint32_t manifest_version, std::uint32_t blob_format) {
     TempDirectory directory;
@@ -522,6 +596,7 @@ void test_unknown_key() {
 
 int main() {
     const std::vector<std::pair<std::string_view, std::function<void()>>> tests{
+        {"AES fixture known vector", test_aes_fixture_known_vector},
         {"mode 1, v0 table, v3 manifest/blob", [] { test_mode_and_range(1, 0, 3, 3); }},
         {"mode 2, v1 table, v4 manifest/blob", [] { test_mode_and_range(2, 1, 4, 4); }},
         {"mode 3 encrypted", [] { test_mode_and_range(3, 1, 4, 4); }},
