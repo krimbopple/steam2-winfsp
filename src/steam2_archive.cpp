@@ -610,7 +610,9 @@ std::map<std::uint32_t, FileMapping> parse_checksum_table(
             }
             const auto expected_blocks = mapping.size == 0 ? 0 :
                 1 + (mapping.size - 1) / kBlockSize;
-            if (count != expected_blocks) {
+            const bool zero_size_metadata_entry =
+                mapping.size == 0 && count == 1 && mapping.mode == 1;
+            if (count != expected_blocks && !zero_size_metadata_entry) {
                 malformed("file size and block count disagree");
             }
             if (count > (reader.size() - reader.position()) / 8) {

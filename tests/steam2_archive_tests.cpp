@@ -321,6 +321,41 @@ s2fs::DepotSpec write_fixture(TempDirectory& directory, std::span<const std::byt
     return {kDepot, options.depot_version, crc,
         directory.path / "blobs", directory.path / "dats", {}, {}, "mount"};
 }
+s2fs::DepotSpec write_zero_size_metadata_fixture(
+    TempDirectory& directory,
+    std::uint8_t mode) {
+    const Bytes marker{std::byte{0x42}};
+    const auto encoded = encode_file(marker, mode);
+    const Bytes empty;
+    const auto checksum = make_checksum_table(empty, encoded, mode, 0, 0);
+    const auto manifest = make_manifest(3, 0);
+    const auto nested = make_blob({{0, manifest}});
+    const auto blob = make_blob({
+        {0, scalar32(3)},
+        {3, compressed_blob(nested)},
+        {4, checksum},
+        {12, scalar32(0)},
+        {13, scalar32(static_cast<std::uint32_t>(encoded.dat.size()))},
+    });
+    constexpr std::uint32_t crc = 0x0badf00d;
+    write_bytes(
+        directory.path / "blobs" / "242_0_0badf00d_fixture.blob",
+        blob);
+    write_bytes(
+        directory.path / "dats" / "242_0_fixture.dat",
+        encoded.dat);
+    return {
+        kDepot,
+        0,
+        crc,
+        directory.path / "blobs",
+        directory.path / "dats",
+        {},
+        {},
+        "",
+    };
+}
+
 
 Bytes sample_data(std::size_t size) {
     Bytes data(size);
@@ -442,6 +477,26 @@ void test_missing_archive_bytes_are_rejected() {
         [&] { (void)s2fs::Steam2Depot::load(spec); }, "block exceeds its paired DAT");
 }
 
+void test_zero_size_metadata_entry() {
+    TempDirectory directory;
+    auto spec = write_zero_size_metadata_fixture(directory, 1);
+    const auto depot = s2fs::Steam2Depot::load(spec);
+    require(depot.entries().size() == 1, "zero-size metadata entry manifest file missing");
+    require(depot.entries()[0].file->size() == 0, "zero-size metadata entry became non-empty");
+    std::array<std::byte, 1> output{};
+    require(
+        depot.entries()[0].file->read(0, output) == 0,
+        "zero-size metadata entry returned archive payload bytes");
+}
+
+void test_other_zero_size_block_mismatch_is_rejected() {
+    TempDirectory directory;
+    auto spec = write_zero_size_metadata_fixture(directory, 2);
+    require_throws<std::runtime_error>(
+        [&] { (void)s2fs::Steam2Depot::load(spec); },
+        "file size and block count disagree");
+}
+
 void test_unknown_key() {
     require_throws<std::out_of_range>([] { (void)s2fs::depot_key(0xffffffffU); }, "no AES key");
 }
@@ -460,6 +515,8 @@ int main() {
         {"unsupported checksum", test_unsupported_checksum_version},
         {"DAT size pairing", test_dat_size_pairing},
         {"missing archive bytes", test_missing_archive_bytes_are_rejected},
+        {"zero-size metadata entry", test_zero_size_metadata_entry},
+        {"invalid zero-size block mismatch", test_other_zero_size_block_mismatch_is_rejected},
         {"unknown key", test_unknown_key},
     };
     int failures = 0;
